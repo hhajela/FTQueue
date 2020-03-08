@@ -134,6 +134,13 @@ class FTQueueService:
         serializedMsg = json.dumps(jsonRep).encode('utf-8')
         self.socket.sendto(serializedMsg,address)
 
+    def broadcastMessage(self,message):
+        #send message to all other nodes
+
+        for n in range(self.totalnodes):
+            if n != self.nodenum:
+                self.sendMessage(message,('localhost',10000+n))
+
     def respondToClient(self,result,address):
         #respond to client@address with result of operation
         response = Message(str(uuid.uuid4()),"client response")
@@ -171,7 +178,7 @@ class FTQueueService:
             #search for the proposal with matching lsequence and retransmit
             for msg in self.outstandingMessages:
                 if msg.sequenceNum == lsequence:
-                    self.sendMessage(msg, sender)
+                    self.broadcastMessage(msg)
         else: #not a proposal, retransmit last sequence message to sender
             self.sendMessage(lastSentSequenceMessage,sender)
 
