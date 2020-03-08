@@ -7,7 +7,7 @@ class FTQueue:
         self.labelQIdMap = {}
         self.qidQMap = {}
 
-    def create(label):
+    def create(self,label):
         #push a new entry if not already present
         if label not in self.labelQIdMap.keys():
             #create new queue
@@ -17,25 +17,29 @@ class FTQueue:
 
         return self.labelQIdMap[label] # return qid
 
-    def destroy(qid):
+    def destroy(self,qid):
         #delete queue with qid and remove label association
         self.labelQIdMap = {label,qid_ for label,qid_ in self.labelQIdMap.items() if qid_ != qid }
         del self.qidQMap[qid]
 
-    def qid(label):
-        return self.labelQIdMap[]
+    def qid(self,label):
+        return self.labelQIdMap[label]
 
-    def push(qid, num):
+    def push(self,qid, num):
         #push a new entry into the corresponding queue
         self.qidQMap[qid].append(num)
 
-    def pop(qid):
+    def pop(self,qid):
         #remove + return element from q
         return self.qidQMap[qid].pop(0)
 
-    def top(qid):
+    def top(self,qid):
         #return element from q
         return self.qidQMap[qid][0]
+    
+    def size(self,id):
+        #return size of q
+        return len(self.qidQMap[id])
     
 
 #message class basically a object representation of json
@@ -51,7 +55,7 @@ class Message:
         self.params = None
         self.changesState = None
     
-    def getJson():
+    def getJson(self):
 
         jsonrep = {'id':self.id, 'type':self.msgType}
 
@@ -125,12 +129,13 @@ class FTQueueService:
         self.isLeader = (True if nodenum == 0 else False)
         self.highestSeenGSequence = -1
         self.lastSentSequenceMessage
+        self.ftqueue = FTQueue()
 
     def getNextMessage(self):
         # get next data from socket,create msg and retrun
         # call factory to get Message Object
         msg,sender = self.socket.recvfrom(4096)
-        msgObj = MessageFactory.createMsg(msg) 
+        msgObj = MessageFactory.createMsg(json.loads(msg.decode('utf-8'))) 
         return msgObj, sender
 
     def sendMessage(self,message, address):
@@ -160,15 +165,15 @@ class FTQueueService:
 
         while(message is not None):
             if message.msgType == "client request":
-                handleClientRequest(message, sender)
+                self.handleClientRequest(message, sender)
             elif message.msgType == "proposal":
-                handleProposalMessage(message,sender)
+                self.handleProposalMessage(message,sender)
             elif message.msgType == "sequence":
-                handleSequenceMessage(message,sender)
+                self.handleSequenceMessage(message,sender)
             elif message.msgType == "retransmit proposal":
-                retransmitMessage(message,sender,True)
+                self.retransmitMessage(message,sender,True)
             elif message.msgType == "retransmit sequence":
-                retransmitMessage(message,sender,False)
+                self.retransmitMessage(message,sender,False)
             
             if self.isLeader:
                 #sequence any outstanding messages
@@ -186,13 +191,73 @@ class FTQueueService:
             for msg in self.outstandingMessages:
                 if msg.sequenceNum == lsequence:
                     self.broadcastMessage(msg)
-        else: #not a proposal, retransmit last sequence message to sender
+                    break
+        else: 
+            #not a proposal, retransmit last sequence message to sender
             self.sendMessage(lastSentSequenceMessage,sender)
 
 
     def processOutstandingMessages(self):
         #judge on outstanding proposal if present
 
+    
+    def doQueueOperation(self,api,params):
+        #identify required op. do and return value
+        if api=="qId":
+            return self.ftqueue.qid(params[0])
+        elif api=="qTop":
+            return self.ftqueue.top(params[0])
+        elif api=="qCreate":
+            return self.ftqueue.create(params[0])
+        elif api=="qDestroy":
+            return self.ftqueue.destroy(params[0])
+        elif api=="qPush":
+            return self.ftqueue.push(params[0],params[1])
+        elif api=="qPop":
+            return self.ftqueue.pop(params[0])
+        elif api=="qSize":
+            return self.ftqueue.size(params[0])
+
+    def doStatechangingQueueOperation(self,message,sender):
+        # first check if you're the leader
+        if self.isLeader:
+            #create and sequence message
+            self.sendSequenceMessage(message)
+            #do local operation
+            result = self.doQueueOperation(message.api,message.params)
+            #return result to client
+            self.respondToClient(result,sender)
+        else:
+            #send a proposal message
+            self.sendProposalMessage(message)
+            #add it to the list of outstanding messages
+            self.outstandingMessages.append(message)
+    
+    def sendSequenceMessage(self,message):
+        #broadcast sequence message to all
+        sequencemsg = Message(message.id,"sequence")
+        self.highestSeenGSequence += 1
+
+        #set sequence message values
+        sequencemsg.sequenceNum = self.highestSeenGSequence
+        sequencemsg.api = message.api
+        sequencemsg.params = message.params
+        self.broadcastMessage(sequencemsg)
+
+        #reset leader status
+        self.isLeader = False
+
+    def handleClientRequest(self,message,sender):
+        #if non state changing request, process and return
+        if not message.stateChanging:
+            result = None
+            try:
+                result = self.doQueueOperation(message.api,message.params)
+            except Exception as e:
+                result = "Error occurred {0}".format(e)
+            self.respondToClient(result,sender)
+        else:
+            self.doStatechangingQueueOperation(message,sender)
 
 
 
