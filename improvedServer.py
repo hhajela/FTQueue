@@ -130,6 +130,7 @@ class FTQueueService:
         self.highestSeenGSequence = -1
         self.lastSentSequenceMessage = None
         self.ftqueue = FTQueue()
+        self.pendingRequestsReturnAddresses = {}
 
     def getNextMessage(self):
         # get next data from socket,create msg and retrun
@@ -153,10 +154,12 @@ class FTQueueService:
             if n != self.nodenum:
                 self.sendMessage(message,('localhost',10000+n))
 
-    def respondToClient(self,result,address):
+    def respondToClient(self,result,api,params,address):
         #respond to client@address with result of operation
         response = Message(str(uuid.uuid4()),"client response")
         response.result = result
+        response.api = api
+        response.params = params
         self.sendMessage(response,address)
 
     def run(self):
@@ -188,7 +191,7 @@ class FTQueueService:
             lsequence = message.params[0]
 
             #search for the proposal with matching lsequence and retransmit
-            for msg in self.outstandingMessages:
+            for msg in self.outstandingMessages.values():
                 if msg.sequenceNum == lsequence:
                     self.broadcastMessage(msg)
                     break
@@ -225,10 +228,10 @@ class FTQueueService:
             #do local operation
             result = self.doQueueOperation(message.api,message.params)
             #return result to client
-            self.respondToClient(result,sender)
+            self.respondToClient(result,message.api,message.params,sender)
         else:
             #send a proposal message
-            self.sendProposalMessage(message)
+            self.sendProposalMessage(message,sender)
     
     def sendSequenceMessage(self,message):
         #broadcast sequence message to all
@@ -247,7 +250,7 @@ class FTQueueService:
         #reset leader status
         self.isLeader = False
     
-    def sendProposalMessage(self,message):
+    def sendProposalMessage(self,message,sender):
         #build proposal message and broadcast to all
         proposal = Message(message.id,"proposal")
 
@@ -261,9 +264,10 @@ class FTQueueService:
         self.broadcastMessage(proposal)
 
         #add to outstanding messages
-        self.outstandingMessages.append(proposal)
+        self.outstandingMessages[proposal.id] = proposal
+        self.pendingRequestsReturnAddresses[proposal.id]= sender
 
-    def sendRetransmitMessage(self,message,isproposal, params,address):
+    def sendRetransmitMessage(self,isproposal, params,address):
         #build retransmit message
         retransmit = Message(str(uuid.uuid4()),"retransmit proposal" if isproposal else "retransmit sequence")
 
@@ -282,7 +286,7 @@ class FTQueueService:
                 result = self.doQueueOperation(message.api,message.params)
             except Exception as e:
                 result = "Error occurred {0}".format(e)
-            self.respondToClient(result,sender)
+            self.respondToClient(result,message.api,message.params,sender)
         else:
             self.handleStatechangingRequest(message,sender)
 
@@ -295,7 +299,7 @@ class FTQueueService:
             #send retransmit for all missing messages
             for num in range(self.lastSeenLSequences[message.sequenceNum[0]]+1,message.sequenceNum[1]+1):
                 params = [num]
-                self.sendRetransmitMessage(message,True,params,sender)
+                self.sendRetransmitMessage(True,params,sender)
             return
 
         #if leader, go through executing state affecting operation approach
@@ -305,4 +309,35 @@ class FTQueueService:
             #do operation locally
             self.doQueueOperation(message.api,message.params)
 
-    
+    def handleSequenceMessage(self,message,sender):
+        #already processed
+        if message.sequenceNum <= self.highestSeenGSequence:
+            return
+
+        #check if out of order
+        if message.sequenceNum > self.highestSeenGSequence+1:
+            #send retransmit request for missing messages
+            nodestart = (self.highestSeenGSequence+1)%self.totalnodes
+            nodeend = (message.sequenceNum)%self.totalnodes
+
+            for node in range(nodestart, nodeend+1):
+                self.sendRetransmitMessage(False,None,('localhost',10000+node))
+            return
+
+        #service the operation
+        result = self.doQueueOperation(message.api,message.params)
+
+        #respond to client if present in outstanding messages
+        if message.id in self.outstandingMessages.keys():
+            #return result to client
+            self.respondToClient(result,message.api,message.params,self.pendingRequestsReturnAddresses[message.id])
+
+        #remove from outstanding messages
+        del self.pendingRequestsReturnAddresses[message.id]
+        del self.outstandingMessages[message.id]
+        
+        #change leader status if applicable
+        self.highestSeenGSequence += 1
+        if (self.highestSeenGSequence+1)%self.totalnodes == self.nodenum:
+            self.isLeader = True
+
