@@ -1,8 +1,11 @@
+import json
+import uuid
+
 class FTQueue:
 
     def __init__(self):
-        self.labelQIdMap = {};
-        self.qidQMap = {};
+        self.labelQIdMap = {}
+        self.qidQMap = {}
 
     def create(label):
         #push a new entry if not already present
@@ -128,6 +131,12 @@ class FTQueueService:
         #serialize and send to address
         serializedMsg = json.dumps(jsonRep).encode('utf-8')
         self.socket.sendto(serializedMsg,address)
+
+    def respondToClient(result,address):
+        #respond to client@address with result of operation
+        response = Message(str(uuid.uuid4()),"client response")
+        response.result = result
+        self.sendMessage(response,address)
 
     def run():
         message,sender = self.getNextMessage()
