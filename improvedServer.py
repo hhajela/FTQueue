@@ -49,6 +49,7 @@ class Message:
         self.result = None
         self.sequenceNum = None
         self.params = None
+        self.changesState = None
     
     def getJson():
 
@@ -65,6 +66,9 @@ class Message:
         
         if self.params is not None:
             jsonrep['params']= params
+
+        if self.msgType == "client request" and self.changesState is None:
+            jsonrep['changesState'] = self.changesState
 
         return jsonrep
 
@@ -102,6 +106,9 @@ class MessageFactory:
 
         if 'params' in msg.keys():
             message.params = msg['params']
+
+        if 'changesState' in msg.keys():
+            message.changesState = msg['changesState']
 
            
 
