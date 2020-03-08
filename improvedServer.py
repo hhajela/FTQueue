@@ -113,9 +113,11 @@ class FTQueueService:
         self.socket = socket
         self.msgRespAddresses = {}
         self.lastSeenLSequences = [[] for i in range(len(totalnodes))]
+        self.outstandingMessages = []
         self.LSequence = -1
+        self.isLeader = (True if nodenum == 0 else False)
         self.highestSeenGSequence = -1
-
+        self.lastSentSequenceMessage
 
     def getNextMessage(self):
         # get next data from socket,create msg and retrun
@@ -124,7 +126,7 @@ class FTQueueService:
         msgObj = MessageFactory.createMsg(msg) 
         return msgObj, sender
 
-    def sendMessage(message, address):
+    def sendMessage(self,message, address):
         #get message json
         jsonRep = message.getJson()
 
@@ -132,14 +134,16 @@ class FTQueueService:
         serializedMsg = json.dumps(jsonRep).encode('utf-8')
         self.socket.sendto(serializedMsg,address)
 
-    def respondToClient(result,address):
+    def respondToClient(self,result,address):
         #respond to client@address with result of operation
         response = Message(str(uuid.uuid4()),"client response")
         response.result = result
         self.sendMessage(response,address)
 
-    def run():
+    def run(self):
         message,sender = self.getNextMessage()
+        self.isLeader = False
+
         while(message is not None):
             if message.msgType == "client request":
                 handleClientRequest(message, sender)
@@ -150,7 +154,30 @@ class FTQueueService:
             elif message.msgType == "retransmit proposal":
                 retransmitMessage(message,sender,True)
             elif message.msgType == "retransmit sequence":
-                retransmitMessage(message,sender,False)    
+                retransmitMessage(message,sender,False)
+            
+            if self.isLeader:
+                #sequence any outstanding messages
+                processOutstandingMessages()
+
+            message, sender = self.getNextMessage()
+
+    def retransmitMessage(message, sender,isproposal):
+        #if proposal, broadcast to all
+        if isproposal:
+            #get the local id to retransmit
+            lsequence = message.params[0]
+
+            #search for the proposal with matching lsequence and retransmit
+            for msg in self.outstandingMessages:
+                if msg.sequenceNum == lsequence:
+                    self.sendMessage(msg, sender)
+        else: #not a proposal, retransmit last sequence message to sender
+            self.sendMessage(lastSentSequenceMessage,sender)
+
+
+    def processOutstandingMessages(self):
+        #judge on outstanding proposal if present
 
 
 
