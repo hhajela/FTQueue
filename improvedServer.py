@@ -128,7 +128,7 @@ class FTQueueService:
         self.LSequence = -1
         self.isLeader = (True if nodenum == 0 else False)
         self.highestSeenGSequence = -1
-        self.lastSentSequenceMessage
+        self.lastSentSequenceMessage = None
         self.ftqueue = FTQueue()
 
     def getNextMessage(self):
@@ -221,7 +221,7 @@ class FTQueueService:
     def doStatechangingQueueOperation(self,message,sender):
         # first check if you're the leader
         if self.isLeader:
-            #create and sequence message
+            #create and send sequence message
             self.sendSequenceMessage(message)
             #do local operation
             result = self.doQueueOperation(message.api,message.params)
@@ -230,8 +230,6 @@ class FTQueueService:
         else:
             #send a proposal message
             self.sendProposalMessage(message)
-            #add it to the list of outstanding messages
-            self.outstandingMessages.append(message)
     
     def sendSequenceMessage(self,message):
         #broadcast sequence message to all
@@ -244,8 +242,27 @@ class FTQueueService:
         sequencemsg.params = message.params
         self.broadcastMessage(sequencemsg)
 
+        #set last sent sequence message
+        self.lastSentSequenceMessage = sequencemsg
+
         #reset leader status
         self.isLeader = False
+    
+    def sendProposalMessage(self,message):
+        #build proposal message and broadcast to all
+        proposal = Message(message.id,"proposal")
+
+        #set vals
+        self.LSequence += 1
+        proposal.sequenceNum = self.LSequence
+        proposal.api = message.api
+        proposal.params = message.params
+
+        #broadcast
+        self.broadcastMessage(proposal)
+
+        #add to outstanding messages
+        self.outstandingMessages.append(proposal)
 
     def handleClientRequest(self,message,sender):
         #if non state changing request, process and return
