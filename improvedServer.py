@@ -123,7 +123,7 @@ class FTQueueService:
         self.totalnodes = totalnodes
         self.socket = socket
         self.msgRespAddresses = {}
-        self.lastSeenLSequences = [[] for i in range(len(totalnodes))]
+        self.lastSeenLSequences = [-1] * len(totalnodes)
         self.outstandingMessages = []
         self.LSequence = -1
         self.isLeader = (True if nodenum == 0 else False)
@@ -196,7 +196,6 @@ class FTQueueService:
             #not a proposal, retransmit last sequence message to sender
             self.sendMessage(lastSentSequenceMessage,sender)
 
-
     def processOutstandingMessages(self):
         #judge on outstanding proposal if present
 
@@ -218,7 +217,7 @@ class FTQueueService:
         elif api=="qSize":
             return self.ftqueue.size(params[0])
 
-    def doStatechangingQueueOperation(self,message,sender):
+    def handleStatechangingRequest(self,message,sender):
         # first check if you're the leader
         if self.isLeader:
             #create and send sequence message
@@ -254,7 +253,7 @@ class FTQueueService:
 
         #set vals
         self.LSequence += 1
-        proposal.sequenceNum = self.LSequence
+        proposal.sequenceNum = [self.nodenum,self.LSequence]
         proposal.api = message.api
         proposal.params = message.params
 
@@ -263,6 +262,17 @@ class FTQueueService:
 
         #add to outstanding messages
         self.outstandingMessages.append(proposal)
+
+    def sendRetransmitMessage(self,message,isproposal, params,address):
+        #build retransmit message
+        retransmit = Message(str(uuid.uuid4()),"retransmit proposal" if isproposal else "retransmit sequence")
+
+        if isproposal:
+            retransmit.params = params
+        
+        #send
+        self.sendMessage(retransmit,address)
+
 
     def handleClientRequest(self,message,sender):
         #if non state changing request, process and return
@@ -274,8 +284,25 @@ class FTQueueService:
                 result = "Error occurred {0}".format(e)
             self.respondToClient(result,sender)
         else:
-            self.doStatechangingQueueOperation(message,sender)
+            self.handleStatechangingRequest(message,sender)
 
+    def handleProposalMessage(self,message,sender):
+        #update lsequence for the sender
+        #send retransmit if out of order
+        if self.lastSeenLSequences[message.sequenceNum[0]]+1 == message.sequenceNum[1]:
+            self.lastSeenLSequences[message.sequenceNum[0]] += 1
+        else:
+            #send retransmit for all missing messages
+            for num in range(self.lastSeenLSequences[message.sequenceNum[0]]+1,message.sequenceNum[1]+1):
+                params = [num]
+                self.sendRetransmitMessage(message,True,params,sender)
+            return
 
+        #if leader, go through executing state affecting operation approach
+        if self.isLeader:
+            #send sequence message
+            self.sendSequenceMessage(message)
+            #do operation locally
+            self.doQueueOperation(message.api,message.params)
 
     
