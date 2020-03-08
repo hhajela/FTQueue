@@ -65,12 +65,42 @@ class Message:
 
         return jsonrep
 
+"""
+Request dictionary
 
+{
+type : "retransmit proposal/retransmit sequence/proposal/sequence/client request/client response" # message types
+
+result(optional field) : # result of operation
+
+api (optional field) : "" # q apis
+
+uuid : "<UUID>" # attached to every message
+
+
+}
+"""
 
 class MessageFactory:
 
     def createMsg(msg):
         #create msg from data
+
+        message = Message(msg['uuid'],msg['type'])
+        
+        if 'api' in msg.keys():
+            message.api = msg['api']
+
+        if 'result' in msg.keys():
+            message.result = msg['result']
+
+        if 'sequenceNum' in msg.keys():
+            message.sequenceNum = msg['sequenceNum']
+
+        if 'params' in msg.keys():
+            message.params = msg['params']
+
+           
 
 class FTQueueService:
 
@@ -79,16 +109,17 @@ class FTQueueService:
         self.totalnodes = totalnodes
         self.socket = socket
         self.msgRespAddresses = {}
+        self.lastSeenLSequences = [[] for i in range(len(totalnodes))]
+        self.LSequence = -1
+        self.highestSeenGSequence = -1
 
 
     def getNextMessage(self):
+        # get next data from socket,create msg and retrun
         # call factory to get Message Object
         msg,sender = self.socket.recvfrom(4096)
-        msgObj = MessageFactory.createMsg(msg)
-        msgRespAddresses[msgObj.id] = sender 
-        return msgObj
-
-
+        msgObj = MessageFactory.createMsg(msg) 
+        return msgObj, sender
 
     def sendMessage(message, address):
         #get message json
@@ -98,8 +129,19 @@ class FTQueueService:
         serializedMsg = json.dumps(jsonRep).encode('utf-8')
         self.socket.sendto(serializedMsg,address)
 
-    
-    
+    def run():
+        message,sender = self.getNextMessage()
+        while(message is not None):
+            if message.msgType == "client request":
+                handleClientRequest(message, sender)
+            elif message.msgType == "proposal":
+                handleProposalMessage(message,sender)
+            elif message.msgType == "sequence":
+                handleSequenceMessage(message,sender)
+            elif message.msgType == "retransmit proposal":
+                retransmitMessage(message,sender,True)
+            elif message.msgType == "retransmit sequence":
+                retransmitMessage(message,sender,False)    
 
 
 
