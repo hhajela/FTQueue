@@ -19,7 +19,7 @@ class FTQueue:
 
     def destroy(self,qid):
         #delete queue with qid and remove label association
-        self.labelQIdMap = {label,qid_ for label,qid_ in self.labelQIdMap.items() if qid_ != qid }
+        self.labelQIdMap = {label:qid_ for label,qid_ in self.labelQIdMap.items() if qid_ != qid }
         del self.qidQMap[qid]
 
     def qid(self,label):
@@ -124,7 +124,7 @@ class FTQueueService:
         self.socket = socket
         self.msgRespAddresses = {}
         self.lastSeenLSequences = [-1] * len(totalnodes)
-        self.outstandingMessages = []
+        self.outstandingMessages = {}
         self.LSequence = -1
         self.isLeader = (True if nodenum == 0 else False)
         self.highestSeenGSequence = -1
@@ -202,6 +202,21 @@ class FTQueueService:
     def processOutstandingMessages(self):
         #judge on outstanding proposal if present
 
+        if len(self.outstandingMessages.values()) == 0:
+            return
+        
+        message = list(self.outstandingMessages.values())[0]
+        address = self.pendingRequestsReturnAddresses[message.id]
+
+        #do operation
+        result = self.doQueueOperation(message.api,message.params)
+
+        #remove from outstanding message list
+        del self.outstandingMessages[message.id]
+        del self.pendingRequestsReturnAddresses[message.id]
+
+        #respond to cliemt
+        self.respondToClient(result,message.api,message.params,address)
     
     def doQueueOperation(self,api,params):
         #identify required op. do and return value
