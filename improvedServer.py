@@ -1,4 +1,6 @@
 import json
+import socket
+import sys
 import uuid
 
 class FTQueue:
@@ -52,24 +54,28 @@ class Message:
         self.api = None
         self.result = None
         self.sequenceNum = None
+        self.gSequenceNum = None
         self.params = None
         self.changesState = None
     
     def getJson(self):
 
-        jsonrep = {'id':self.id, 'type':self.msgType}
+        jsonrep = {'uuid':self.id, 'type':self.msgType}
 
         if self.api is not None:
             jsonrep['api'] = self.api
 
         if self.result is not None:
-            jsonrep['result']= result
+            jsonrep['result']= self.result
         
         if self.sequenceNum is not None:
-            jsonrep['sequenceNum'] = sequenceNum
+            jsonrep['sequenceNum'] = self.sequenceNum
+
+        if self.gSequenceNum is not None:
+            jsonrep['gSequenceNum'] = self.gSequenceNum
         
         if self.params is not None:
-            jsonrep['params']= params
+            jsonrep['params']= self.params
 
         if self.msgType == "client request" and self.changesState is None:
             jsonrep['changesState'] = self.changesState
@@ -93,7 +99,7 @@ uuid : "<UUID>" # attached to every message
 """
 
 class MessageFactory:
-
+    @staticmethod
     def createMsg(msg):
         #create msg from data
 
@@ -108,13 +114,16 @@ class MessageFactory:
         if 'sequenceNum' in msg.keys():
             message.sequenceNum = msg['sequenceNum']
 
+        if 'gSequenceNum' in msg.keys():
+            message.gSequenceNum = msg['gSequenceNum']
+
         if 'params' in msg.keys():
             message.params = msg['params']
 
         if 'changesState' in msg.keys():
             message.changesState = msg['changesState']
 
-           
+        return message
 
 class FTQueueService:
 
@@ -122,8 +131,7 @@ class FTQueueService:
         self.nodenum = nodenum
         self.totalnodes = totalnodes
         self.socket = socket
-        self.msgRespAddresses = {}
-        self.lastSeenLSequences = [-1] * len(totalnodes)
+        self.lastSeenLSequences = [-1] * totalnodes
         self.outstandingMessages = {}
         self.LSequence = -1
         self.isLeader = (True if nodenum == 0 else False)
@@ -136,20 +144,22 @@ class FTQueueService:
         # get next data from socket,create msg and retrun
         # call factory to get Message Object
         msg,sender = self.socket.recvfrom(4096)
-        msgObj = MessageFactory.createMsg(json.loads(msg.decode('utf-8'))) 
+        msgJson = json.loads(msg.decode('utf-8'))
+        log("Node {0} received msg {1}".format(self.nodenum,msgJson))
+        msgObj = MessageFactory.createMsg(msgJson) 
         return msgObj, sender
 
     def sendMessage(self,message, address):
         #get message json
         jsonRep = message.getJson()
-
+        log("Node {2} Sending message {0} to address {1}".format(jsonRep,address,self.nodenum))
         #serialize and send to address
         serializedMsg = json.dumps(jsonRep).encode('utf-8')
         self.socket.sendto(serializedMsg,address)
 
     def broadcastMessage(self,message):
         #send message to all other nodes
-
+        log("Broadcasting message {0} to all".format(message.getJson()))
         for n in range(self.totalnodes):
             if n != self.nodenum:
                 self.sendMessage(message,('localhost',10000+n))
@@ -163,8 +173,8 @@ class FTQueueService:
         self.sendMessage(response,address)
 
     def run(self):
+        log("Server {0} waiting for messages".format(self.nodenum))
         message,sender = self.getNextMessage()
-        self.isLeader = False
 
         while(message is not None):
             if message.msgType == "client request":
@@ -180,11 +190,12 @@ class FTQueueService:
             
             if self.isLeader:
                 #sequence any outstanding messages
-                processOutstandingMessages()
+                self.processOutstandingMessages()
 
+            log("Server {0} waiting for messages".format(self.nodenum))
             message, sender = self.getNextMessage()
 
-    def retransmitMessage(message, sender,isproposal):
+    def retransmitMessage(self, message, sender,isproposal):
         #if proposal, broadcast to all
         if isproposal:
             #get the local id to retransmit
@@ -192,12 +203,12 @@ class FTQueueService:
 
             #search for the proposal with matching lsequence and retransmit
             for msg in self.outstandingMessages.values():
-                if msg.sequenceNum == lsequence:
+                if msg.sequenceNum[1] == lsequence:
                     self.broadcastMessage(msg)
                     break
         else: 
             #not a proposal, retransmit last sequence message to sender
-            self.sendMessage(lastSentSequenceMessage,sender)
+            self.sendMessage(self.lastSentSequenceMessage,sender)
 
     def processOutstandingMessages(self):
         #judge on outstanding proposal if present
@@ -219,21 +230,27 @@ class FTQueueService:
         self.respondToClient(result,message.api,message.params,address)
     
     def doQueueOperation(self,api,params):
-        #identify required op. do and return value
-        if api=="qId":
-            return self.ftqueue.qid(params[0])
-        elif api=="qTop":
-            return self.ftqueue.top(params[0])
-        elif api=="qCreate":
-            return self.ftqueue.create(params[0])
-        elif api=="qDestroy":
-            return self.ftqueue.destroy(params[0])
-        elif api=="qPush":
-            return self.ftqueue.push(params[0],params[1])
-        elif api=="qPop":
-            return self.ftqueue.pop(params[0])
-        elif api=="qSize":
-            return self.ftqueue.size(params[0])
+        #identify required op. do and return value,exception message if failure
+        result = None
+        try:
+            if api=="qId":
+                result = self.ftqueue.qid(params[0])
+            elif api=="qTop":
+                result = self.ftqueue.top(params[0])
+            elif api=="qCreate":
+                result = self.ftqueue.create(params[0])
+            elif api=="qDestroy":
+                result = self.ftqueue.destroy(params[0])
+            elif api=="qPush":
+                result = self.ftqueue.push(params[0],params[1])
+            elif api=="qPop":
+                result = self.ftqueue.pop(params[0])
+            elif api=="qSize":
+                result = self.ftqueue.size(params[0])
+        except Exception as e:
+                result = "Error occurred {0}".format(e)
+
+        return result
 
     def handleStatechangingRequest(self,message,sender):
         # first check if you're the leader
@@ -250,11 +267,13 @@ class FTQueueService:
     
     def sendSequenceMessage(self,message):
         #broadcast sequence message to all
+        log("in sendsequence")
         sequencemsg = Message(message.id,"sequence")
         self.highestSeenGSequence += 1
 
         #set sequence message values
-        sequencemsg.sequenceNum = self.highestSeenGSequence
+        sequencemsg.sequenceNum = message.sequenceNum
+        sequencemsg.gSequenceNum = self.highestSeenGSequence
         sequencemsg.api = message.api
         sequencemsg.params = message.params
         self.broadcastMessage(sequencemsg)
@@ -264,6 +283,7 @@ class FTQueueService:
 
         #reset leader status
         self.isLeader = False
+        log("{0} is no longer leader".format(self.nodenum))
     
     def sendProposalMessage(self,message,sender):
         #build proposal message and broadcast to all
@@ -295,12 +315,9 @@ class FTQueueService:
 
     def handleClientRequest(self,message,sender):
         #if non state changing request, process and return
-        if not message.stateChanging:
-            result = None
-            try:
-                result = self.doQueueOperation(message.api,message.params)
-            except Exception as e:
-                result = "Error occurred {0}".format(e)
+        log("client request received {0} from address {1}".format(message.getJson(),sender))
+        if not message.changesState:
+            result = self.doQueueOperation(message.api,message.params)
             self.respondToClient(result,message.api,message.params,sender)
         else:
             self.handleStatechangingRequest(message,sender)
@@ -308,32 +325,43 @@ class FTQueueService:
     def handleProposalMessage(self,message,sender):
         #update lsequence for the sender
         #send retransmit if out of order
+
+        #already seen message
+        if self.lastSeenLSequences[message.sequenceNum[0]] >= message.sequenceNum[1]:
+            log("Node {0} has already seen message {1} from node {2}".format(self.nodenum,message.getJson(),message.sequenceNum[0]))
+            return
+
+        log("hey,here")
         if self.lastSeenLSequences[message.sequenceNum[0]]+1 == message.sequenceNum[1]:
             self.lastSeenLSequences[message.sequenceNum[0]] += 1
         else:
             #send retransmit for all missing messages
+            log("sending retransmit proposal")
             for num in range(self.lastSeenLSequences[message.sequenceNum[0]]+1,message.sequenceNum[1]+1):
                 params = [num]
                 self.sendRetransmitMessage(True,params,sender)
             return
 
+        log("{1} is leader : {0}".format(self.isLeader,self.nodenum))
         #if leader, go through executing state affecting operation approach
         if self.isLeader:
+            log("doign leader stuff")
             #send sequence message
             self.sendSequenceMessage(message)
             #do operation locally
             self.doQueueOperation(message.api,message.params)
 
+    #update highest seen local and global sequence number
     def handleSequenceMessage(self,message,sender):
         #already processed
-        if message.sequenceNum <= self.highestSeenGSequence:
+        if message.gSequenceNum <= self.highestSeenGSequence:
             return
 
         #check if out of order
-        if message.sequenceNum > self.highestSeenGSequence+1:
+        if message.gSequenceNum > self.highestSeenGSequence+1:
             #send retransmit request for missing messages
             nodestart = (self.highestSeenGSequence+1)%self.totalnodes
-            nodeend = (message.sequenceNum)%self.totalnodes
+            nodeend = (message.gSequenceNum)%self.totalnodes
 
             for node in range(nodestart, nodeend+1):
                 self.sendRetransmitMessage(False,None,('localhost',10000+node))
@@ -342,17 +370,46 @@ class FTQueueService:
         #service the operation
         result = self.doQueueOperation(message.api,message.params)
 
+        #update local sequence number for original sender
+        if message.sequenceNum is not None:
+            self.lastSeenLSequences[message.sequenceNum[0]] = max(self.lastSeenLSequences[message.sequenceNum[0]],message.sequenceNum[1])
+
         #respond to client if present in outstanding messages
         if message.id in self.outstandingMessages.keys():
             #return result to client
             self.respondToClient(result,message.api,message.params,self.pendingRequestsReturnAddresses[message.id])
 
-        #remove from outstanding messages
-        del self.pendingRequestsReturnAddresses[message.id]
-        del self.outstandingMessages[message.id]
+            #remove from outstanding messages
+            del self.pendingRequestsReturnAddresses[message.id]
+            del self.outstandingMessages[message.id]
         
         #change leader status if applicable
         self.highestSeenGSequence += 1
         if (self.highestSeenGSequence+1)%self.totalnodes == self.nodenum:
             self.isLeader = True
+            log("{0} is now leader".format(self.nodenum))
 
+gLogfile = None
+
+def log(text):
+    global gLogfile
+    with open(gLogfile,'a') as f:
+        f.write(text+"\n")
+
+
+if __name__=="__main__":
+    #args
+    nodenum = 0 if len(sys.argv)<2 else int(sys.argv[1])
+
+    gLogfile = "log{0}.txt".format(nodenum)
+
+    #create socket and bind
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+    # Bind the socket to the port
+    server_address = ('localhost', nodenum+10000)
+    sock.bind(server_address)
+
+    #create service instance
+    ftqueueService = FTQueueService(nodenum,5,sock)
+    ftqueueService.run()
