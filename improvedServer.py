@@ -189,7 +189,7 @@ class FTQueueService:
                 self.retransmitMessage(message,sender,False)
             
             if self.isLeader:
-                #sequence any outstanding messages
+                #sequence any outstanding requests first
                 self.processOutstandingMessages()
 
             log("Server {0} waiting for messages".format(self.nodenum))
@@ -212,12 +212,16 @@ class FTQueueService:
 
     def processOutstandingMessages(self):
         #judge on outstanding proposal if present
-
         if len(self.outstandingMessages.values()) == 0:
             return
+
+        print("Node {0} processing outstanding messages".format(self.nodenum))
         
         message = list(self.outstandingMessages.values())[0]
         address = self.pendingRequestsReturnAddresses[message.id]
+
+        #send sequence msg
+        self.sendSequenceMessage(message)
 
         #do operation
         result = self.doQueueOperation(message.api,message.params)
@@ -267,7 +271,6 @@ class FTQueueService:
     
     def sendSequenceMessage(self,message):
         #broadcast sequence message to all
-        log("in sendsequence")
         sequencemsg = Message(message.id,"sequence")
         self.highestSeenGSequence += 1
 
@@ -331,7 +334,6 @@ class FTQueueService:
             log("Node {0} has already seen message {1} from node {2}".format(self.nodenum,message.getJson(),message.sequenceNum[0]))
             return
 
-        log("hey,here")
         if self.lastSeenLSequences[message.sequenceNum[0]]+1 == message.sequenceNum[1]:
             self.lastSeenLSequences[message.sequenceNum[0]] += 1
         else:
@@ -345,7 +347,6 @@ class FTQueueService:
         log("{1} is leader : {0}".format(self.isLeader,self.nodenum))
         #if leader, go through executing state affecting operation approach
         if self.isLeader:
-            log("doign leader stuff")
             #send sequence message
             self.sendSequenceMessage(message)
             #do operation locally
@@ -360,11 +361,9 @@ class FTQueueService:
         #check if out of order
         if message.gSequenceNum > self.highestSeenGSequence+1:
             #send retransmit request for missing messages
-            nodestart = (self.highestSeenGSequence+1)%self.totalnodes
-            nodeend = (message.gSequenceNum)%self.totalnodes
-
-            for node in range(nodestart, nodeend+1):
-                self.sendRetransmitMessage(False,None,('localhost',10000+node))
+            for seqnum in range(self.highestSeenGSequence+1, message.gSequenceNum +1):
+                port = (seqnum % self.totalnodes) + 10000
+                self.sendRetransmitMessage(False,None,('localhost',port))
             return
 
         #service the operation
