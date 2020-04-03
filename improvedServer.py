@@ -166,6 +166,7 @@ class TimedThread:
         self.timer.start()
 
     def reset(self):
+        self.timer.cancel()
         self.timer = Timer(self.duration, self.tick)
         self.timer.start()
 
@@ -188,6 +189,8 @@ class FTQueueService:
         self.deliveredMessages = {} #keep track of all delivered msgs
         self.deliveredMessages[self.curConfig] = []
         self.hbeatThread = None
+        self.hbeatTimers = [TimedThread(120,self.hbeatTimeout,[i]) for i in range(totalnodes)]
+        self.discoverMembers = False
 
     def getNextMessage(self):
         # get next data from socket,create msg and retrun
@@ -226,10 +229,16 @@ class FTQueueService:
 
         #start hbeat thread
         self.hbeatThread = TimedThread(20, self.sendHbeat, None)
+        self.hbeatThread.start()
+
+        #start expiry timers for all members
+        for timer in self.hbeatTimers:
+            timer.reset()
 
         message,sender = self.getNextMessage()
 
         while(message is not None):
+
             if message.msgType == "client request":
                 self.handleClientRequest(message, sender)
             elif message.msgType == "proposal":
@@ -241,7 +250,9 @@ class FTQueueService:
             elif message.msgType == "retransmit sequence":
                 self.retransmitMessage(message,sender,False)
             elif message.msgType == "member discovery":
-                self.startMemberDiscovery()
+                self.doMemberDiscovery()
+            elif message.msgType == "heartbeat":
+                self.processHeartbeat(message, sender)
             
             if self.isLeader:
                 #sequence any outstanding requests first
@@ -370,7 +381,7 @@ class FTQueueService:
         self.outstandingMessages[proposal.id] = proposal
         self.pendingRequestsReturnAddresses[proposal.id]= sender
 
-    def sendRetransmitMessage(self,isproposal, params,address):
+    def sendRetransmitMessage(self,isproposal, params, address):
         #build retransmit message
         retransmit = Message(str(uuid.uuid4()),"retransmit proposal" if isproposal else "retransmit sequence")
 
@@ -518,12 +529,26 @@ class FTQueueService:
             self.deliveredMessages = pickle.load(f)
 
         #start member discovery using restored member list as basepoint
-        self.startMemberDiscovery()
+        self.doMemberDiscovery()
 
     def sendHbeat(self):
         #send hbeat message to all
         message = Message(str(uuid.uuid4()), "heartbeat")
         self.broadcastMessage(message)
+
+    def hbeatTimeout(self, nodenum):
+        #hbeat for node x failed
+        #initiate member discovery phase after marking this one as unknown
+        self.knownMembers[nodenum] = False
+
+        #start member discovery
+        self.doMemberDiscovery()
+
+    def processHeartbeat(self,message,sender):
+        #reset timer for that node
+        nodenum = sender[1]
+        self.hbeatTimers[nodenum-10000].reset()
+
 
 gLogfile = None
 
