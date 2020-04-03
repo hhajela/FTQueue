@@ -42,6 +42,20 @@ class FTQueue:
     def size(self,id):
         #return size of q
         return len(self.qidQMap[id])
+
+    def toJson(self):
+        return json.dumps(self.labelQIdMap), json.dumps(self.qidQMap)
+
+    def fromJson(labeljsonrep, qidjsonrep):
+        ftqueue = FTQueue()
+        ftqueue.labelQIdMap = json.loads(labeljsonrep)
+        
+        qidQmap = json.loads(qidjsonrep)
+        for key in qidQmap.keys():
+            ftqueue.qidQMap[int(key)] = qidQmap[key].copy()
+
+        return ftqueue
+
     
 
 #message class basically a object representation of json
