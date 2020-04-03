@@ -10,9 +10,10 @@ if __name__=="__main__":
     request = {'uuid':str(uuid.uuid4()),'type':'client request', 'api': 'qCreate', 'params' :[3], 'changesState':True}
     print("request {0}".format(request))
     print("response:-")
-    sock.sendto(json.dumps(request).encode('utf-8'),('localhost',10002))
+    sock.sendto(json.dumps(request).encode('utf-8'),('localhost',10001))
     print(sock.recvfrom(4096))
 
+    input("Press Enter to continue...")
     
     print("")
     print("get qid")
@@ -26,6 +27,7 @@ if __name__=="__main__":
     response = json.loads(sock.recvfrom(4096)[0].decode('utf-8'))
     qid = response['result']
     print(response)
+    """
     sock.sendto(json.dumps(request).encode('utf-8'),('localhost',10000))
     print(sock.recvfrom(4096))
     sock.sendto(json.dumps(request).encode('utf-8'),('localhost',10002))
@@ -34,6 +36,9 @@ if __name__=="__main__":
     print(sock.recvfrom(4096))
     sock.sendto(json.dumps(request).encode('utf-8'),('localhost',10004))
     print(sock.recvfrom(4096))
+    """
+
+    input("Press Enter to continue...")
 
     print("")
     print("doing push")
@@ -56,17 +61,23 @@ if __name__=="__main__":
     request['params'] = [qid]
     print("request {0}".format(request))
     print("response:-")
-    sock.sendto(json.dumps(request).encode('utf-8'),('localhost',10000))
-    print(sock.recvfrom(4096))
+    #sock.sendto(json.dumps(request).encode('utf-8'),('localhost',10000))
+    #print(sock.recvfrom(4096))
+    
+    
     sock.sendto(json.dumps(request).encode('utf-8'),('localhost',10001))
     print(sock.recvfrom(4096))
+    
+    """
     sock.sendto(json.dumps(request).encode('utf-8'),('localhost',10002))
     print(sock.recvfrom(4096))
     sock.sendto(json.dumps(request).encode('utf-8'),('localhost',10003))
     print(sock.recvfrom(4096))
     sock.sendto(json.dumps(request).encode('utf-8'),('localhost',10004))
     print(sock.recvfrom(4096))
+    """
 
+    input("Press Enter to continue...")
 
     print("")
     print("doing pop")
@@ -79,6 +90,7 @@ if __name__=="__main__":
     sock.sendto(json.dumps(request).encode('utf-8'),('localhost',10001))
     print(sock.recvfrom(4096))
 
+    """
     print("")
     print("checking queue size")
     #check size for two nodes
@@ -97,6 +109,8 @@ if __name__=="__main__":
     print(sock.recvfrom(4096))
     sock.sendto(json.dumps(request).encode('utf-8'),('localhost',10004))
     print(sock.recvfrom(4096))
+    """
+    input("Press Enter to continue...")
 
     print("")
     print("creating another q")
@@ -109,6 +123,7 @@ if __name__=="__main__":
     sock.sendto(json.dumps(request).encode('utf-8'),('localhost',10001))
     print(sock.recvfrom(4096))
 
+    """
     print("")
     print("checking its existence")
     request['api'] = 'qId'
@@ -126,7 +141,8 @@ if __name__=="__main__":
     print(sock.recvfrom(4096))
     sock.sendto(json.dumps(request).encode('utf-8'),('localhost',10004))
     print(sock.recvfrom(4096))
-
+    """
+    input("Press Enter to continue...")
     print("")
     print("deleting q")
     #create another q
@@ -137,7 +153,8 @@ if __name__=="__main__":
     print("response:-")
     sock.sendto(json.dumps(request).encode('utf-8'),('localhost',10001))
     print(sock.recvfrom(4096))
-
+    
+    input("Press Enter to continue...")
     print("")
     print("verifying deletion")
     request['api'] = 'qId'
