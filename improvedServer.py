@@ -206,6 +206,8 @@ class FTQueueService:
                 self.retransmitMessage(message,sender,True)
             elif message.msgType == "retransmit sequence":
                 self.retransmitMessage(message,sender,False)
+            elif message.msgType == "member discovery":
+                self.startMemberDiscovery()
             
             if self.isLeader:
                 #sequence any outstanding requests first
@@ -438,6 +440,44 @@ class FTQueueService:
         with open("delivered.p", "wb") as f:
             pickle.dump(self.deliveredMessages, f)
 
+    def startMemberDiscovery(self):
+        #set member discover to true
+        self.discoverMembers = True
+
+        #send member discovery message
+        message = Message(str(uuid.uuid4()), "member discovery")
+        self.broadcastMessage(message)
+
+    def restart(self):
+        #load data state
+        labeljson = None
+        qidjson = None
+
+        with open("label.json","r") as f:
+            labeljson = f.read()
+
+        with open("qid.json","r") as f:
+            qidjson = f.read()
+
+        self.ftqueue = FTQueue.fromJson(labeljson, qidjson)
+
+        #restore member list
+        with open("members.p","rb") as f:
+            self.knownMembers = pickle.load(f)
+        
+        #restore sequence information
+        with open("sequence.json", "r") as f:
+            sequenceInfo = json.loads(f.read())
+            self.curConfig = sequenceInfo['config']
+            self.highestSeenGSequence = sequenceInfo['sequence']
+
+        #restore messages delivered
+        with open("delivered.p","rb") as f:
+            self.deliveredMessages = pickle.load(f)
+
+        #start member discovery using restored member list as basepoint
+        self.startMemberDiscovery()
+
 gLogfile = None
 
 def log(text):
@@ -450,6 +490,8 @@ if __name__=="__main__":
     #args
     nodenum = 0 if len(sys.argv)<2 else int(sys.argv[1])
 
+    restart = False if len(sys.argv)<3 else sys.argv[2]=="-r"
+
     gLogfile = "log{0}.txt".format(nodenum)
 
     #create socket and bind
@@ -461,4 +503,8 @@ if __name__=="__main__":
 
     #create service instance
     ftqueueService = FTQueueService(nodenum,5,sock)
+    
+    if restart:
+        ftqueueService.restart()
+
     ftqueueService.run()
