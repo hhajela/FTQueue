@@ -1,6 +1,7 @@
 import json
 import socket
 import sys
+import pickle
 import uuid
 
 class FTQueue:
@@ -153,6 +154,10 @@ class FTQueueService:
         self.lastSentSequenceMessage = None
         self.ftqueue = FTQueue()
         self.pendingRequestsReturnAddresses = {}
+        self.curConfig = ''.join(str(i) for i in range(totalnodes))# what is the current membership
+        self.knownMembers = [true] * totalnodes
+        self.deliveredMessages = {} #keep track of all delivered msgs
+        self.deliveredMessages[self.curConfig] = []
 
     def getNextMessage(self):
         # get next data from socket,create msg and retrun
@@ -265,6 +270,10 @@ class FTQueueService:
                 result = self.ftqueue.pop(params[0])
             elif api=="qSize":
                 result = self.ftqueue.size(params[0])
+
+            #save state to file
+            self.saveAppState()
+
         except Exception as e:
                 result = "Error occurred {0}".format(e)
 
@@ -297,6 +306,9 @@ class FTQueueService:
 
         #set last sent sequence message
         self.lastSentSequenceMessage = sequencemsg
+
+        #add last sent sequence msg to delviered list
+        self.deliveredMessages[self.curConfig].append(sequencemsg)
 
         #reset leader status
         self.isLeader = False
@@ -363,6 +375,7 @@ class FTQueueService:
         if self.isLeader:
             #send sequence message
             self.sendSequenceMessage(message)
+
             #do operation locally
             self.doQueueOperation(message.api,message.params)
 
@@ -401,6 +414,29 @@ class FTQueueService:
         if (self.highestSeenGSequence+1)%self.totalnodes == self.nodenum:
             self.isLeader = True
             log("{0} is now leader".format(self.nodenum))
+
+        #add message to delivered message lst
+        self.deliveredMessages[self.curConfig].append(message)
+    
+    def saveAppState(self):
+        #save data structure
+        labeljson, qidjson = self.ftqueue.toJson()
+        with open("label.json",'w') as f:
+            f.write(labeljson)
+        with open("qid.json",'w') as f:
+            f.write(qidjson)
+
+        #save known member list
+        with open("members.p","wb") as f:
+            pickle.dump(self.knownMembers,f)
+
+        #save current sequence and config number
+        with open("sequence.json","w") as f:
+            f.write(json.dumps({'config':self.curConfig, 'sequence':self.highestSeenGSequence}))
+
+        #save current message history
+        with open("delivered.p", "wb") as f:
+            pickle.dump(self.deliveredMessages, f)
 
 gLogfile = None
 
