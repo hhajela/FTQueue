@@ -187,6 +187,7 @@ class FTQueueService:
         self.knownMembers = [True] * totalnodes
         self.deliveredMessages = {} #keep track of all delivered msgs
         self.deliveredMessages[self.curConfig] = []
+        self.hbeatThread = None
 
     def getNextMessage(self):
         # get next data from socket,create msg and retrun
@@ -222,6 +223,9 @@ class FTQueueService:
 
     def run(self):
         log("Server {0} waiting for messages".format(self.nodenum))
+
+        #start hbeat thread
+        self.hbeatThread = TimedThread(20, self.sendHbeat, None)
 
         message,sender = self.getNextMessage()
 
@@ -515,6 +519,11 @@ class FTQueueService:
 
         #start member discovery using restored member list as basepoint
         self.startMemberDiscovery()
+
+    def sendHbeat(self):
+        #send hbeat message to all
+        message = Message(str(uuid.uuid4()), "heartbeat")
+        self.broadcastMessage(message)
 
 gLogfile = None
 
