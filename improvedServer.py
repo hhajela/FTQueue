@@ -186,10 +186,10 @@ class FTQueueService:
         self.pendingRequestsReturnAddresses = {}
         self.curConfig = ''.join(str(i) for i in range(totalnodes))# what is the current membership
         self.knownMembers = [True] * totalnodes
-        self.deliveredMessages = {} #keep track of all delivered msgs
-        self.deliveredMessages[self.curConfig] = []
-        self.hbeatThread = None
-        self.hbeatTimers = [TimedThread(120,self.hbeatTimeout,[i]) for i in range(totalnodes)]
+        self.deliveredMessages = [[]] #keep track of all delivered msgs
+        self.deliveredMessages[-1].append(self.curConfig)
+        self.hbeatThread = TimedThread(20, self.sendHbeat, None)
+        self.hbeatTimers = [TimedThread(30,self.hbeatTimeout,[i]) for i in range(totalnodes)]
         self.discoverMembers = False
 
     def getNextMessage(self):
@@ -228,12 +228,12 @@ class FTQueueService:
         log("Server {0} waiting for messages".format(self.nodenum))
 
         #start hbeat thread
-        self.hbeatThread = TimedThread(20, self.sendHbeat, None)
         self.hbeatThread.start()
 
         #start expiry timers for all members
-        for timer in self.hbeatTimers:
-            timer.reset()
+        for i,timer in enumerate(self.hbeatTimers):
+            if i != self.nodenum:
+                timer.reset()
 
         message,sender = self.getNextMessage()
 
@@ -293,7 +293,7 @@ class FTQueueService:
         result = self.doQueueOperation(message.api,message.params)
 
         #update delivered messages and save state
-        self.deliveredMessages[self.curConfig].append(message)
+        self.deliveredMessages[-1].append(message)
         self.saveAppState()
 
         #remove from outstanding message list
@@ -336,7 +336,7 @@ class FTQueueService:
             result = self.doQueueOperation(message.api,message.params)
 
             #save state and update delivered messages
-            self.deliveredMessages[self.curConfig].append(message)
+            self.deliveredMessages[-1].append(message)
             self.saveAppState()
 
             #return result to client
@@ -430,7 +430,7 @@ class FTQueueService:
             self.doQueueOperation(message.api,message.params)
 
             #update delivered messages and save state
-            self.deliveredMessages[self.curConfig].append(message)
+            self.deliveredMessages[-1].append(message)
             self.saveAppState()
 
     #update highest seen local and global sequence number
@@ -470,7 +470,7 @@ class FTQueueService:
             log("{0} is now leader".format(self.nodenum))
 
         #add message to delivered message lst and save state
-        self.deliveredMessages[self.curConfig].append(message)
+        self.deliveredMessages[-1].append(message)
         self.saveAppState()
     
     def saveAppState(self):
@@ -493,13 +493,182 @@ class FTQueueService:
         with open("delivered{0}.p".format(self.nodenum), "wb") as f:
             pickle.dump(self.deliveredMessages, f)
 
-    def startMemberDiscovery(self):
+    def doMemberDiscovery(self):
         #set member discover to true
         self.discoverMembers = True
 
-        #send member discovery message
+        #stop hbeat timers and your own heartbeat thread
+        for timer in self.hbeatTimers:
+            timer.cancel()
+        
+        self.hbeatThread.cancel()
+        
+        #establish all members
+        self.reachMembershipConsensus()
+        
+        #do same thing for sequence messages
+        self.reachSequenceConsensus()
+
+        #update current config
+        self.curConfig = ''.join([str(i) for i in range(len(self.knownMembers)) if self.knownMembers[i]])
+        
+        #update sequence number
+        self.deliveredMessages.append([])
+        self.deliveredMessages[-1].append(curConfig)
+
+        #reset 
+        self.totalnodes = len(self.curConfig)
+        self.lastSeenLSequences = [-1] * totalnodes
+        self.outstandingMessages = {}
+        self.LSequence = -1
+        self.isLeader = (True if self.nodenum == 0 else False)
+        self.highestSeenGSequence = -1
+        self.lastSentSequenceMessage = None
+
+        self.hbeatTimers = [TimedThread(30,self.hbeatTimeout,[i]) for i in range(len(self.knownMembers)) if self.knownMembers[i]]
+
+    def reachMembershipConsensus(self):
+        
+        #send known member list
         message = Message(str(uuid.uuid4()), "member discovery")
+        message.params = self.knownMembers
         self.broadcastMessage(message)
+
+        self.socket.settimeout(60)
+        membershipSame = False
+        othermembers = {}
+
+        while not membershipSame:
+            #exchange messages until timeout expires
+            while True:
+                anyUpdate = False
+
+                #wait for new messages or for timeout
+                try:
+                    message, sender = self.getNextMessage()
+                except socket.timeout as e:
+                    print("timed out, will verify membership same")
+                    break
+
+                #skip if not membership mesasage
+                if message.msgType != "member discovery":
+                    continue
+
+                #check message list is same as yours
+                #if not, update it, resend
+                memberlist = message.params
+                othermembers[sender[1]-10000] = memberlist
+
+                for i in range(len(memberlist)):
+                    if memberlist[i] and not self.knownMembers[i]:
+                        self.knownMembers[i] = True
+                        anyUpdate = True
+
+                if anyUpdate:    
+                    message = Message(str(uuid.uuid4()), "member discovery")
+                    message.params = self.knownMembers
+                    self.broadcastMessage(message)
+
+            membershipSame = True
+            #check membership same or not
+            for key in othermembers.keys():
+                if len(othermembers[key]) != len(self.knownMembers):
+                    membershipSame = False
+                    break
+
+                match = True
+                for i in range(len(othermembers[key])):
+                    if othermembers[key][i] != self.knownMembers[i]:
+                        match = False
+                        break
+
+                if not match:
+                    membershipSame = False
+                    break
+        
+        self.socket.setblocking(True)
+        print(self.knownMembers)
+
+    def reachSequenceConsensus(self):
+        #store old values
+        oldMessageInfo = (len(self.deliveredMessages), len(self.deliveredMessages[-1]))
+
+        #send message history
+        message = Message(str(uuid.uuid4()), "sequence sync")
+        message.params = pickle.dumps(self.deliveredMessages)
+        self.broadcastMessage(message)
+
+        self.socket.settimeout(60)
+        sequenceSynced = True
+        otherVals = {}
+
+        while not sequenceSynced:
+            #exchange messages until timeout expires
+            while True:
+                #wait for new messages or for timeout
+                try:
+                    message, sender = self.getNextMessage()
+                except socket.timeout as e:
+                    print("timed out, will verify membership same")
+                    break
+
+                #skip if not sequence sync message
+                if message.msgType != 'sequence sync':
+                    continue
+            
+                othermsgs = pickle.loads(message.params)
+
+                #store total configs, total msgs in last config
+                otherVals[sender[1]-10000] = (len(othermsgs), len(othermsgs[-1]))
+
+                #check if this has any messages you don't
+                if len(othermsgs) < len(self.deliveredMessages):
+                    continue
+
+                for i in range(len(othermsgs)):
+                    if i < len(self.deliveredMessages) and len(othermsgs[i]) == len(self.deliveredMessages[i]):
+                        continue
+
+                    if i>= len(self.deliveredMessages):
+                        self.deliveredMessages.append([])
+                        self.deliveredMessages[-1].append(othermsgs[i][0])
+                    
+                    #now copy all missing messages
+                    for j in range(1,len(othermsgs[i])):
+                        self.deliveredMessages[-1].append(othermsgs[i][j])
+
+                #broadcast new list again
+                message = Message(str(uuid.uuid4()), "sequence sync")
+                message.params = pickle.dumps(self.deliveredMessages)
+                self.broadcastMessage(message)
+
+            sequenceSynced = True
+            #check messages same or not
+            for key in otherVals.keys():
+                if otherVals[0] != len(self.deliveredMessages) or otherVals[1] != len(self.deliveredMessages[-1]):
+                    sequenceSynced = False
+        
+        self.socket.setblocking(True)
+        self.playbackMessages(oldMessageInfo)
+
+    
+    def playbackMessages(self, oldMessageInfo):
+        #playback all till end
+
+        startIndex = oldMessageInfo[1]-1
+        endIndex = len(self.deliveredMessages[oldMessageInfo[0]-1])
+
+        #first deliver all remaining messages from last known config
+        for i in range(startIndex,endIndex):
+            msg = self.deliveredMessages[oldMessageInfo[0]-1][i]
+            self.doQueueOperation(msg.api,msg.params)
+
+        #process remaining
+        for i in range(oldMessageInfo[0], len(self.deliveredMessages)):
+            for j in range(1,len(self.deliveredMessages[i])):
+                msg = self.deliveredMessages[i][j]
+                self.doQueueOperation(msg.api,msg.params)
+        
 
     def restart(self):
         #load data state
