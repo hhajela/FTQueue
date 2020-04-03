@@ -155,7 +155,7 @@ class FTQueueService:
         self.ftqueue = FTQueue()
         self.pendingRequestsReturnAddresses = {}
         self.curConfig = ''.join(str(i) for i in range(totalnodes))# what is the current membership
-        self.knownMembers = [true] * totalnodes
+        self.knownMembers = [True] * totalnodes
         self.deliveredMessages = {} #keep track of all delivered msgs
         self.deliveredMessages[self.curConfig] = []
 
@@ -247,6 +247,10 @@ class FTQueueService:
         #do operation
         result = self.doQueueOperation(message.api,message.params)
 
+        #update delivered messages and save state
+        self.deliveredMessages[self.curConfig].append(message)
+        self.saveAppState()
+
         #remove from outstanding message list
         del self.outstandingMessages[message.id]
         del self.pendingRequestsReturnAddresses[message.id]
@@ -273,9 +277,6 @@ class FTQueueService:
             elif api=="qSize":
                 result = self.ftqueue.size(params[0])
 
-            #save state to file
-            self.saveAppState()
-
         except Exception as e:
                 result = "Error occurred {0}".format(e)
 
@@ -288,6 +289,11 @@ class FTQueueService:
             self.sendSequenceMessage(message)
             #do local operation
             result = self.doQueueOperation(message.api,message.params)
+
+            #save state and update delivered messages
+            self.deliveredMessages[self.curConfig].append(message)
+            self.saveAppState()
+
             #return result to client
             self.respondToClient(result,message.api,message.params,sender)
         else:
@@ -308,9 +314,6 @@ class FTQueueService:
 
         #set last sent sequence message
         self.lastSentSequenceMessage = sequencemsg
-
-        #add last sent sequence msg to delviered list
-        self.deliveredMessages[self.curConfig].append(sequencemsg)
 
         #reset leader status
         self.isLeader = False
@@ -381,6 +384,10 @@ class FTQueueService:
             #do operation locally
             self.doQueueOperation(message.api,message.params)
 
+            #update delivered messages and save state
+            self.deliveredMessages[self.curConfig].append(message)
+            self.saveAppState()
+
     #update highest seen local and global sequence number
     def handleSequenceMessage(self,message,sender):
         #already processed
@@ -417,27 +424,28 @@ class FTQueueService:
             self.isLeader = True
             log("{0} is now leader".format(self.nodenum))
 
-        #add message to delivered message lst
+        #add message to delivered message lst and save state
         self.deliveredMessages[self.curConfig].append(message)
+        self.saveAppState()
     
     def saveAppState(self):
         #save data structure
         labeljson, qidjson = self.ftqueue.toJson()
-        with open("label.json",'w') as f:
+        with open("label{0}.json".format(self.nodenum),'w') as f:
             f.write(labeljson)
-        with open("qid.json",'w') as f:
+        with open("qid{0}.json".format(self.nodenum),'w') as f:
             f.write(qidjson)
 
         #save known member list
-        with open("members.p","wb") as f:
+        with open("members{0}.p".format(self.nodenum),"wb") as f:
             pickle.dump(self.knownMembers,f)
 
         #save current sequence and config number
-        with open("sequence.json","w") as f:
+        with open("sequence{0}.json".format(self.nodenum),"w") as f:
             f.write(json.dumps({'config':self.curConfig, 'sequence':self.highestSeenGSequence}))
 
         #save current message history
-        with open("delivered.p", "wb") as f:
+        with open("delivered{0}.p".format(self.nodenum), "wb") as f:
             pickle.dump(self.deliveredMessages, f)
 
     def startMemberDiscovery(self):
@@ -453,26 +461,26 @@ class FTQueueService:
         labeljson = None
         qidjson = None
 
-        with open("label.json","r") as f:
+        with open("label{0}.json".format(self.nodenum),"r") as f:
             labeljson = f.read()
 
-        with open("qid.json","r") as f:
+        with open("qid{0}.json".format(self.nodenum),"r") as f:
             qidjson = f.read()
 
         self.ftqueue = FTQueue.fromJson(labeljson, qidjson)
 
         #restore member list
-        with open("members.p","rb") as f:
+        with open("members{0}.p".format(self.nodenum),"rb") as f:
             self.knownMembers = pickle.load(f)
         
         #restore sequence information
-        with open("sequence.json", "r") as f:
+        with open("sequence{0}.json".format(self.nodenum), "r") as f:
             sequenceInfo = json.loads(f.read())
             self.curConfig = sequenceInfo['config']
             self.highestSeenGSequence = sequenceInfo['sequence']
 
         #restore messages delivered
-        with open("delivered.p","rb") as f:
+        with open("delivered{0}.p".format(self.nodenum),"rb") as f:
             self.deliveredMessages = pickle.load(f)
 
         #start member discovery using restored member list as basepoint
