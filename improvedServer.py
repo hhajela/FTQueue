@@ -3,7 +3,7 @@ import socket
 import sys
 import pickle
 import uuid
-import threading
+from threading import Timer
 
 class FTQueue:
 
@@ -140,6 +140,34 @@ class MessageFactory:
             message.changesState = msg['changesState']
 
         return message
+
+class TimedThread:
+
+    def __init__(self, duration, fn, args):
+        self.timer = Timer(duration, self.tick)
+        self.fn = fn
+        self.args = args
+        self.duration = duration
+    
+    def tick(self):
+        #call callback
+        if self.args is not None:
+            self.fn(*self.args)
+        else:
+            self.fn()
+
+        self.timer = Timer(self.duration, self.tick)
+        self.timer.start()
+
+    def cancel(self):
+        self.timer.cancel()
+
+    def start(self):
+        self.timer.start()
+
+    def reset(self):
+        self.timer = Timer(self.duration, self.tick)
+        self.timer.start()
 
 class FTQueueService:
 
