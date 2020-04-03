@@ -3,6 +3,7 @@ import socket
 import sys
 import pickle
 import uuid
+import threading
 
 class FTQueue:
 
@@ -179,9 +180,9 @@ class FTQueueService:
     def broadcastMessage(self,message):
         #send message to all other nodes
         log("Broadcasting message {0} to all".format(message.getJson()))
-        for n in range(self.totalnodes):
-            if n != self.nodenum:
-                self.sendMessage(message,('localhost',10000+n))
+        for i in range(len(self.knownMembers)):
+            if self.knownMembers[i] and i != self.nodenum:
+                self.sendMessage(message,('localhost',10000+i))
 
     def respondToClient(self,result,api,params,address):
         #respond to client@address with result of operation
@@ -193,6 +194,7 @@ class FTQueueService:
 
     def run(self):
         log("Server {0} waiting for messages".format(self.nodenum))
+
         message,sender = self.getNextMessage()
 
         while(message is not None):
