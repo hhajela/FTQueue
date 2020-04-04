@@ -2,6 +2,7 @@ import json
 import socket
 import sys
 import pickle
+import time
 import uuid
 from threading import Timer
 
@@ -243,7 +244,9 @@ class FTQueueService:
 
         while(message is not None):
 
-            if message.msgType == "client request":
+            if self.discoverMembers:
+                self.doMemberDiscovery()
+            elif message.msgType == "client request":
                 self.handleClientRequest(message, sender)
             elif message.msgType == "proposal":
                 self.handleProposalMessage(message,sender)
@@ -254,6 +257,12 @@ class FTQueueService:
             elif message.msgType == "retransmit sequence":
                 self.retransmitMessage(message,sender,False)
             elif message.msgType == "member discovery":
+                #check if message is up to date
+                if message.sequenceNum != self.curConfig:
+                    #already processed
+                    continue
+
+                self.startMemberDiscovery()
                 self.doMemberDiscovery()
             elif message.msgType == "heartbeat":
                 self.processHeartbeat(message, sender)
@@ -262,7 +271,7 @@ class FTQueueService:
                 #sequence any outstanding requests first
                 self.processOutstandingMessages()
 
-            log("Server {0} waiting for messages".format(self.nodenum))
+            log("Server {0} waiting for next message".format(self.nodenum))
             message, sender = self.getNextMessage()
 
     def retransmitMessage(self, message, sender,isproposal):
@@ -497,16 +506,21 @@ class FTQueueService:
         with open("delivered{0}.p".format(self.nodenum), "wb") as f:
             pickle.dump(self.deliveredMessages, f)
 
-    def doMemberDiscovery(self):
-        #set member discover to true
-        self.discoverMembers = True
-
+    def startMemberDiscovery(self):
         #stop hbeat timers and your own heartbeat thread
         for timer in self.hbeatTimers:
             timer.cancel()
         
         self.hbeatThread.cancel()
-        
+
+        self.discoverMembers = True
+
+        #send empty discovery message
+        message = Message(str(uuid.uuid4()), "member discovery")
+        message.sequenceNum = self.curConfig
+        self.broadcastMessage(message)
+
+    def doMemberDiscovery(self):
         #establish all members
         self.reachMembershipConsensus()
         
@@ -742,7 +756,7 @@ class FTQueueService:
             self.deliveredMessages = pickle.load(f)
 
         #start member discovery using restored member list as basepoint
-        self.doMemberDiscovery()
+        self.startMemberDiscovery()
 
     def sendHbeat(self):
         #send hbeat message to all
@@ -752,10 +766,11 @@ class FTQueueService:
     def hbeatTimeout(self, nodenum):
         #hbeat for node x failed
         #initiate member discovery phase after marking this one as unknown
+        log("{0} timed out, starting membership discovery".format(nodenum))
         self.knownMembers[nodenum] = False
 
         #start member discovery
-        self.doMemberDiscovery()
+        self.startMemberDiscovery()
 
     def processHeartbeat(self,message,sender):
         #reset timer for that node
