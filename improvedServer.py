@@ -148,6 +148,7 @@ class TimedThread:
         self.fn = fn
         self.args = args
         self.duration = duration
+        self.cancelled = False
     
     def tick(self):
         #call callback
@@ -156,10 +157,12 @@ class TimedThread:
         else:
             self.fn()
 
-        self.timer = Timer(self.duration, self.tick)
-        self.timer.start()
+        if not self.cancelled:
+            self.timer = Timer(self.duration, self.tick)
+            self.timer.start()
 
     def cancel(self):
+        self.cancelled = True
         self.timer.cancel()
 
     def start(self):
@@ -167,6 +170,7 @@ class TimedThread:
 
     def reset(self):
         self.timer.cancel()
+        self.cancelled = False
         self.timer = Timer(self.duration, self.tick)
         self.timer.start()
 
@@ -225,10 +229,10 @@ class FTQueueService:
         self.sendMessage(response,address)
 
     def run(self):
-        log("Server {0} waiting for messages".format(self.nodenum))
+        log("Server {0} running".format(self.nodenum))
 
         #start hbeat thread
-        self.hbeatThread.start()
+        self.hbeatThread.reset()
 
         #start expiry timers for all members
         for i,timer in enumerate(self.hbeatTimers):
