@@ -171,7 +171,8 @@ if __name__=="__main__":
     print(sock.recvfrom(4096))
     sock.sendto(json.dumps(request).encode('utf-8'),('localhost',10003))
     print(sock.recvfrom(4096))
-    sock.sendto(json.dumps(request).encode('utf-8'),('localhost',10004))
-    print(sock.recvfrom(4096))
+    #sock.sendto(json.dumps(request).encode('utf-8'),('localhost',10004))
+    #print(sock.recvfrom(4096))
+
 
 

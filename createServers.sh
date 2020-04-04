@@ -1,4 +1,4 @@
-#!bin/bash
+#!/bin/bash
 
 python3 improvedServer.py 0 &
 python3 improvedServer.py 1 &
