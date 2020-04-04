@@ -518,68 +518,87 @@ class FTQueueService:
         
         #update sequence number
         self.deliveredMessages.append([])
-        self.deliveredMessages[-1].append(curConfig)
+        self.deliveredMessages[-1].append(self.curConfig)
 
         #reset 
         self.totalnodes = len(self.curConfig)
-        self.lastSeenLSequences = [-1] * totalnodes
+        self.lastSeenLSequences = [-1] * self.totalnodes
         self.outstandingMessages = {}
         self.LSequence = -1
         self.isLeader = (True if self.nodenum == 0 else False)
         self.highestSeenGSequence = -1
         self.lastSentSequenceMessage = None
-
+        self.discoverMembers = False
         self.hbeatTimers = [TimedThread(30,self.hbeatTimeout,[i]) for i in range(len(self.knownMembers)) if self.knownMembers[i]]
 
     def reachMembershipConsensus(self):
         
         #send known member list
         message = Message(str(uuid.uuid4()), "member discovery")
-        message.params = self.knownMembers
+        
+        #initially you are only certain about your own membership
+        #but broadcast to old known members
+        newknownMembers = [i==self.nodenum for i in range(len(self.knownMembers))]
+        message.params = newknownMembers
+        message.sequenceNum = self.curConfig
         self.broadcastMessage(message)
+        self.knownMembers = newknownMembers
 
-        self.socket.settimeout(60)
+        #change socket to non blcokign for message exchange
+        #before checking all values same
+        self.socket.setblocking(False)
         membershipSame = False
         othermembers = {}
 
         while not membershipSame:
-            #exchange messages until timeout expires
+            noUpdateCount = 0
+            #exchange messages until no new updates
             while True:
                 anyUpdate = False
 
-                #wait for new messages or for timeout
+                #wait 5 seconds
+                time.sleep(5)
+
+                #check for any new message
                 try:
                     message, sender = self.getNextMessage()
-                except socket.timeout as e:
-                    print("timed out, will verify membership same")
+
+                    #skip if not membership message or for another config or empty
+                    if message.msgType != "member discovery" or message.sequenceNum != self.curConfig or message.params is None:
+                        continue
+
+                    #check message list is same as yours
+                    #if not, update it
+                    memberlist = message.params
+                    othermembers[sender[1]-10000] = memberlist
+
+                    for i in range(len(memberlist)):
+                        if memberlist[i] and not self.knownMembers[i]:
+                            self.knownMembers[i] = True
+                            anyUpdate = True
+
+                except Exception as e:
+                    log("exception occurred while fetching message {0}".format(e))
+                
+                message = Message(str(uuid.uuid4()), "member discovery")
+                message.params = self.knownMembers
+                message.sequenceNum = self.curConfig
+                self.broadcastMessage(message)
+
+                if anyUpdate:
+                    noUpdateCount = 0
+                else:
+                    noUpdateCount += 1
+
+                log("no update count is {0}".format(noUpdateCount))
+                #no new update since 5 times
+                if noUpdateCount >= 5:
                     break
-
-                #skip if not membership mesasage
-                if message.msgType != "member discovery":
-                    continue
-
-                #check message list is same as yours
-                #if not, update it, resend
-                memberlist = message.params
-                othermembers[sender[1]-10000] = memberlist
-
-                for i in range(len(memberlist)):
-                    if memberlist[i] and not self.knownMembers[i]:
-                        self.knownMembers[i] = True
-                        anyUpdate = True
-
-                if anyUpdate:    
-                    message = Message(str(uuid.uuid4()), "member discovery")
-                    message.params = self.knownMembers
-                    self.broadcastMessage(message)
 
             membershipSame = True
             #check membership same or not
+            log("checking membership {0} {1}".format(othermembers, self.knownMembers))
             for key in othermembers.keys():
-                if len(othermembers[key]) != len(self.knownMembers):
-                    membershipSame = False
-                    break
-
                 match = True
                 for i in range(len(othermembers[key])):
                     if othermembers[key][i] != self.knownMembers[i]:
@@ -599,57 +618,78 @@ class FTQueueService:
 
         #send message history
         message = Message(str(uuid.uuid4()), "sequence sync")
-        message.params = pickle.dumps(self.deliveredMessages)
+        message.params = [[msg.getJson() if i!=0 else msg for i,msg in enumerate(configMsgs)] for configMsgs in self.deliveredMessages]
         self.broadcastMessage(message)
 
-        self.socket.settimeout(60)
-        sequenceSynced = True
+        self.socket.setblocking(False)
+        sequenceSynced = False
         otherVals = {}
 
         while not sequenceSynced:
+            noUpdateCount = 0
             #exchange messages until timeout expires
             while True:
-                #wait for new messages or for timeout
+                anyUpdate = False
+
+                #wait for fixed duration
+                time.sleep(5)
+
+                #check for any new msg
                 try:
                     message, sender = self.getNextMessage()
-                except socket.timeout as e:
-                    print("timed out, will verify membership same")
-                    break
 
-                #skip if not sequence sync message
-                if message.msgType != 'sequence sync':
-                    continue
-            
-                othermsgs = pickle.loads(message.params)
-
-                #store total configs, total msgs in last config
-                otherVals[sender[1]-10000] = (len(othermsgs), len(othermsgs[-1]))
-
-                #check if this has any messages you don't
-                if len(othermsgs) < len(self.deliveredMessages):
-                    continue
-
-                for i in range(len(othermsgs)):
-                    if i < len(self.deliveredMessages) and len(othermsgs[i]) == len(self.deliveredMessages[i]):
+                    #skip if not sequence sync message
+                    if message.msgType != 'sequence sync':
                         continue
+                
+                    #unserialize to get list of list of msgs
+                    serializedHistory = message.params
+                    othermsgs = [[MessageFactory.createMsg(msg) if i!=0 else msg for i,msg in enumerate(configMsgs)] for configMsgs in serializedHistory]
 
-                    if i>= len(self.deliveredMessages):
-                        self.deliveredMessages.append([])
-                        self.deliveredMessages[-1].append(othermsgs[i][0])
-                    
-                    #now copy all missing messages
-                    for j in range(1,len(othermsgs[i])):
-                        self.deliveredMessages[-1].append(othermsgs[i][j])
+                    #store total configs, total msgs in last config
+                    otherVals[sender[1]-10000] = (len(othermsgs), len(othermsgs[-1]))
 
-                #broadcast new list again
+                    #check if this has any messages you don't
+                    if len(othermsgs) >= len(self.deliveredMessages):
+                        for i in range(len(othermsgs)):
+                            if i < len(self.deliveredMessages) and len(othermsgs[i]) == len(self.deliveredMessages[i]):
+                                continue
+
+                            anyUpdate = True
+                            if i>= len(self.deliveredMessages):
+                                self.deliveredMessages.append([])
+                                self.deliveredMessages[-1].append(othermsgs[i][0])
+                            
+                            if len(self.deliveredMessages[i])>1:
+                                # copy what's missing
+                                for j in range(len(self.deliveredMessages[i]),len(othermsgs[i])):
+                                    self.deliveredMessages[-1].append(othermsgs[i][j])
+                            else:
+                                #now copy all missing messages
+                                for j in range(1,len(othermsgs[i])):
+                                    self.deliveredMessages[-1].append(othermsgs[i][j])
+                except Exception as e:
+                    log("error while fetching message {0}".format(e))
+
+                #send new list again to randomly picked node
                 message = Message(str(uuid.uuid4()), "sequence sync")
-                message.params = pickle.dumps(self.deliveredMessages)
+                message.params = [[msg.getJson() if i!=0 else msg for i,msg in enumerate(configMsgs)] for configMsgs in self.deliveredMessages]
                 self.broadcastMessage(message)
+
+                if anyUpdate:
+                    noUpdateCount = 0
+                else:
+                    noUpdateCount += 1
+
+                log("no update count is {0}".format(noUpdateCount))
+                if noUpdateCount>=5:
+                    break
 
             sequenceSynced = True
             #check messages same or not
-            for key in otherVals.keys():
-                if otherVals[0] != len(self.deliveredMessages) or otherVals[1] != len(self.deliveredMessages[-1]):
+            for node, messageInfo in otherVals.items():
+                if messageInfo[0] != len(self.deliveredMessages) or messageInfo[1] != len(self.deliveredMessages[-1]):
+                    log("sequence sync failed, {0} is not equal to {1}".format(messageInfo, (len(self.deliveredMessages), len(self.deliveredMessages[-1]))))
                     sequenceSynced = False
         
         self.socket.setblocking(True)
